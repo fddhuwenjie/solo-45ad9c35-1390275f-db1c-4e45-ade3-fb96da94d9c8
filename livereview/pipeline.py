@@ -155,10 +155,12 @@ def _series_events(series, final_norm):
         if v is not None and run_start is None:
             run_start = i
         if v is None and run_start is not None:
-            runs.append([run_start, i, series[run_start]["text"]])
+            runs.append([run_start, i, series[run_start]["text"],
+                         series[run_start]["norm"]])
             run_start = None
     if run_start is not None:
-        runs.append([run_start, n, series[run_start]["text"]])
+        runs.append([run_start, n, series[run_start]["text"],
+                     series[run_start]["norm"]])
     return {"first_display": first_display, "stable": stable,
             "replace_count": replace_count, "retract_count": retract_count,
             "runs": runs}
@@ -283,12 +285,30 @@ class Ctx:
                 flags.append("gap_uncertain:" + name)
         if st is None:
             flags.append("never_stable")
-        # 改写/撤回在缺页处只增不减 → 计数为下界
-        if any(self.gap_before[i] for i in range(1, len(self.snapshots))
-               if (series[i] is None) != (series[i - 1] is None)
-               or (series[i] is not None and series[i - 1] is not None
-                   and series[i]["norm"] != series[i - 1]["norm"])):
-            flags.append("counts_lower_bound")
+        # --- 缺页对计数的影响 ---
+        # 序列号跨缺口且该词元取值在缺口两侧发生变化（含出现/消失）时，
+        # 缺失页内可能发生过任意多次改写/撤回，计数必须为未定；
+        # 缺口两侧一致的词元计数仍为下界，保留数值并打标记。
+        counts_undef = False
+        for i in range(1, len(self.snapshots)):
+            if not self.gap_before[i]:
+                continue
+            prev, cur = series[i - 1], series[i]
+            pn = prev["norm"] if prev else None
+            cn = cur["norm"] if cur else None
+            if pn != cn:
+                counts_undef = True
+                break
+        if counts_undef:
+            undefined.append("snapshot_gap")
+            flags.append("counts_undefined:gap")
+            replace_count = None
+            retract_count = None
+        else:
+            if any(self.gap_before):
+                flags.append("counts_lower_bound")
+            replace_count = ev["replace_count"]
+            retract_count = ev["retract_count"]
 
         latency_undef = [u for u in undefined if u in (
             "no_anchor", "anchor_residual_exceeded",
@@ -318,8 +338,8 @@ class Ctx:
             "stable_t": _r(t_st),
             "first_latency": _lat(t_fd),
             "stable_latency": _lat(t_st),
-            "replace_count": ev["replace_count"],
-            "retract_count": ev["retract_count"],
+            "replace_count": replace_count,
+            "retract_count": retract_count,
             "runs": ev["runs"],
             "first_display_idx": fd,
             "stable_idx": st,
