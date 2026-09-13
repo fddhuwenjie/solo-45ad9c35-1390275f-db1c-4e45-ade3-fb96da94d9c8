@@ -254,7 +254,6 @@ def _esc(s):
 
 def export_window_svg(layout_result):
     """窗口预览 SVG：各次呈现的字幕窗口缩略图，问题呈现红框标出。"""
-    from .layout import ASPECTS
     st = layout_result["settings"]
     ar_w, ar_h = ASPECTS[st["aspect"]]
     pres = layout_result["presentations"]

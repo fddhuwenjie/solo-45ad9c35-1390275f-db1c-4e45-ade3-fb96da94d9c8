@@ -275,7 +275,7 @@ def _font_units(store, family):
     """字体度量：浏览器实测（SQLite）优先，其次内置表；都没有 → None。"""
     m = store.get_font_metrics(family)
     if m:
-        return m["units"], "measured"
+        return m["units"], m["source"] or "measured"
     if family in layout.BUILTIN_METRICS:
         return layout.BUILTIN_METRICS[family], "builtin"
     return None, None

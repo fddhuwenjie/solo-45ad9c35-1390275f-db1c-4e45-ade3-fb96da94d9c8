@@ -46,6 +46,7 @@ const fmtSigned = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).to
 
 // ---------------------------------------------------------------- 全局状态
 let S = null;            // 会话状态
+let L = null;            // 版面复核状态
 let SID = null;
 let audioCtx = null;
 let audioBuf = null;
@@ -59,6 +60,9 @@ let selectedUtt = null;
 let recessMode = false;
 let drag = null;         // 波形拖选 {x0, x1}
 let anchorRows = null;   // 锚点编辑副本
+let editorSel = null;    // 断行编辑器拖选 {a, b}
+let brkDrag = null;      // 换行点拖动 {gap}
+let gapClick = null;     // 间隙点击候选 {gap, x, y}
 
 const CELL_W = 7, CELL_H = 10;
 
@@ -81,18 +85,21 @@ async function refreshSessions(selectId) {
 async function loadSession(sid) {
   S = await api("/api/session/" + sid + "/state");
   SID = sid;
+  L = null;
   selectedToken = null;
   selectedUtt = null;
   anchorRows = S.anchors.map(a => ({ log_ts: a.log_ts, audio_ts: a.audio_ts }));
   stopAudio();
   renderAll();
   loadAudio();
+  loadLayout();
 }
 
 function applyState(st) {
   S = st;
   anchorRows = S.anchors.map(a => ({ log_ts: a.log_ts, audio_ts: a.audio_ts }));
   renderAll();
+  loadLayout();   // 词元指标/时刻可能变化，版面复核同步刷新
 }
 
 // ---------------------------------------------------------------- 渲染总览
@@ -121,7 +128,12 @@ function renderHeader() {
   el.innerHTML = "";
   if (S.confirmation) {
     for (const [k, label] of [["vtt", "修正 WebVTT"], ["csv", "逐词 CSV"],
-                              ["svg", "延迟曲线 SVG"], ["json", "复算 JSON"]]) {
+                              ["svg", "延迟曲线 SVG"], ["json", "复算 JSON"],
+                              ["breaks_vtt", "断行 WebVTT"],
+                              ["issues_csv", "问题 CSV"],
+                              ["window_svg", "窗口预览 SVG"],
+                              ["layout_json", "版面复算 JSON"]]) {
+      if (!S.confirmation.exports || !S.confirmation.exports[k]) continue;
       const a = document.createElement("a");
       a.href = "/api/session/" + SID + "/export/" + k;
       a.textContent = label;
@@ -550,6 +562,7 @@ function updatePlayheads() {
 
 function tick() {
   if (S) updatePlayheads();
+  if (S && L) drawCaption();
   requestAnimationFrame(tick);
 }
 
@@ -698,3 +711,464 @@ function bind() {
   await loadSession(sid);
   requestAnimationFrame(tick);
 })();
+
+
+// ================================================================ 断行与滚屏复核
+// 版面设置 / Canvas 字幕窗口回放 / 断行编辑器 / 呈现指标 / 可读性问题
+
+const ISSUE_LABEL = {
+  overwide: "超宽", orphan_line: "孤行", lock_split: "锁定单元被拆",
+  dwell_short: "驻留不足", snapshot_gap: "快照缺页",
+  font_metrics_missing: "字体度量缺失",
+};
+
+async function loadLayout() {
+  try {
+    L = await api("/api/session/" + SID + "/layout");
+  } catch (e) {
+    L = null;
+    console.warn("版面状态加载失败", e);
+    return;
+  }
+  renderLayoutAll();
+}
+
+function renderLayoutAll() {
+  if (!L) return;
+  renderLayoutSettings();
+  renderEditor();
+  renderLayoutMetrics();
+  renderLayoutIssues();
+  drawCaption();
+}
+
+async function saveLayout(patch) {
+  const msg = $("editor-msg");
+  try {
+    L = await post("/api/session/" + SID + "/layout/revise", patch);
+    if (msg) msg.textContent = "已保存为修订 #" + L.revision +
+      "（共 " + L.revisions.length + " 条）";
+    renderLayoutAll();
+  } catch (e) {
+    if (msg) msg.textContent = "保存失败：" + e.message;
+  }
+}
+
+// ---------------------------------------------------------------- 版面设置
+function renderLayoutSettings() {
+  const el = $("layout-settings");
+  const st = L.settings;
+  const fonts = L.fonts.map(f => f.family);
+  if (!fonts.includes(st.font_family)) fonts.unshift(st.font_family);
+  el.innerHTML =
+    '<div class="row">' +
+    '<label>画幅 <select id="ls-aspect">' +
+      Object.keys(L.aspects).map(a =>
+        `<option ${a === st.aspect ? "selected" : ""}>${a}</option>`).join("") +
+    '</select></label>' +
+    '<label>模式 <select id="ls-mode">' +
+      `<option value="scroll" ${st.mode === "scroll" ? "selected" : ""}>逐行滚动</option>` +
+      `<option value="replace" ${st.mode === "replace" ? "selected" : ""}>整屏替换</option>` +
+    '</select></label>' +
+    `<label>行数 <input id="ls-lines" type="number" min="1" max="6" value="${st.lines}"></label>` +
+    `<label>字号 <input id="ls-fontsize" type="number" min="8" max="120" value="${st.font_size}"> px</label>` +
+    `<label>可用行宽 <input id="ls-width" type="number" min="100" max="4000" step="10" value="${st.line_width}"> px</label>` +
+    `<label>最短驻留 <input id="ls-dwell" type="number" min="0" max="10" step="0.1" value="${st.min_dwell}"> s</label>` +
+    '</div><div class="row">' +
+    `<label>字体 <input id="ls-font" list="ls-fonts" value="${st.font_family}" style="width:180px">` +
+    '<datalist id="ls-fonts">' +
+      fonts.map(f => `<option value="${f}">`).join("") + '</datalist></label>' +
+    `<span id="ls-font-state" class="font-state ${L.font.metrics ? "ok" : "missing"}">` +
+      (L.font.metrics
+        ? "度量可用（" + (L.font.source === "browser" ? "浏览器实测" : "内置") + "）"
+        : "字体度量缺失：行宽占用与超宽检查未定") + '</span>' +
+    `<button id="ls-measure">用浏览器测量字体</button>` +
+    `<button id="ls-save" class="primary" ${locked()}>保存为修订</button>` +
+    `<span class="hint">修订 #${L.revision}（共 ${L.revisions.length} 条）</span>` +
+    '</div>';
+  $("ls-save").addEventListener("click", () => {
+    saveLayout({ settings: {
+      aspect: $("ls-aspect").value,
+      mode: $("ls-mode").value,
+      lines: +$("ls-lines").value,
+      font_size: +$("ls-fontsize").value,
+      line_width: +$("ls-width").value,
+      min_dwell: +$("ls-dwell").value,
+      font_family: $("ls-font").value.trim(),
+    }});
+  });
+  $("ls-measure").addEventListener("click", measureFont);
+}
+
+// Canvas measureText 探针：以 100px 字号测量各类字符平均宽度（em 相对值）
+async function measureFont() {
+  const fam = ($("ls-font") ? $("ls-font").value.trim() : "") ||
+              L.settings.font_family;
+  const g = document.createElement("canvas").getContext("2d");
+  const PX = 100;
+  g.font = PX + "px " + fam;
+  const avg = (s) => g.measureText(s).width / PX / s.length;
+  const units = {
+    cjk: avg("汉字符测量平均宽度样本"),
+    latin: avg("abcdefghijklmnopqrstuvwxyz"),
+    digit: avg("0123456789"),
+    punct_cjk: avg("，。、；：？！"),
+    punct_ascii: avg(".,;:!?()[]-"),
+    space: (g.measureText("i i").width - g.measureText("ii").width) / PX,
+    overrides: {},
+  };
+  try {
+    await put("/api/fonts/" + encodeURIComponent(fam) + "/metrics", { units });
+    await loadLayout();
+  } catch (e) {
+    $("ls-font-state").textContent = "测量保存失败：" + e.message;
+  }
+}
+
+// ---------------------------------------------------------------- 断行编辑器
+function renderEditor() {
+  const el = $("line-editor");
+  el.innerHTML = "";
+  const toks = L.result.tokens, lines = L.result.lines;
+  const brks = new Set(L.result.breaks);
+  const lockOf = {};
+  L.result.locks.forEach((lk, i) => {
+    for (let j = lk[0]; j < lk[1]; j++) lockOf[j] = i;
+  });
+  const splitLocks = new Set();
+  for (const it of L.result.issues) {
+    if (it.type === "lock_split" && it.lock) {
+      for (let j = it.lock[0]; j < it.lock[1]; j++) splitLocks.add(j);
+    }
+  }
+  const lineStart = new Set(lines.map(ln => ln.start));
+
+  const mkGap = (j) => {          // 词元 j 之前的间隙（j-1 与 j 之间）
+    const g = document.createElement("span");
+    g.className = "gap";
+    g.dataset.gap = j;
+    if (j > 0 && (brks.has(j) || lineStart.has(j))) {
+      const b = document.createElement("span");
+      b.className = "brk " + (brks.has(j) ? "manual" : "auto");
+      b.dataset.gap = j;
+      b.title = brks.has(j) ? "手动换行点：拖动移动，点击间隙取消"
+                            : "自动换行点：可拖动调整";
+      g.appendChild(b);
+    }
+    return g;
+  };
+
+  for (const ln of lines) {
+    const row = document.createElement("div");
+    row.className = "lrow" + (ln.orphan ? " orphan-row" : "");
+    const no = document.createElement("span");
+    no.className = "lno";
+    no.textContent = "行" + (ln.idx + 1);
+    row.appendChild(no);
+    for (let j = ln.start; j < ln.end; j++) {
+      if (j > ln.start) row.appendChild(mkGap(j));
+      const c = document.createElement("span");
+      c.className = "tok";
+      c.textContent = toks[j].text;
+      c.dataset.j = j;
+      if (lockOf[j] != null) {
+        const lk = L.result.locks[lockOf[j]];
+        c.classList.add("locked");
+        if (j === lk[0]) c.classList.add("lock-head");
+        if (j === lk[1] - 1) c.classList.add("lock-tail");
+        c.title = "锁定单元 #" + (lockOf[j] + 1) + "（不可拆；点击解锁）";
+      }
+      if (splitLocks.has(j)) {
+        c.classList.add("lock-split");
+        c.title = "该锁定单元被换行点拆开（可读性未定）";
+      }
+      row.appendChild(c);
+    }
+    if (ln.end < toks.length) row.appendChild(mkGap(ln.end));
+    const usage = document.createElement("span");
+    usage.className = "usage" + (ln.overwide ? " over" : "");
+    usage.textContent = ln.usage == null ? "行宽未定"
+      : Math.round(ln.usage * 100) + "%";
+    if (ln.overwide) usage.title = "超宽：" + ln.width + "px > " +
+      L.settings.line_width + "px";
+    row.appendChild(usage);
+    el.appendChild(row);
+  }
+  if (!L.locked) bindEditor(el);
+}
+
+function bindEditor(el) {
+  el.querySelectorAll(".gap").forEach(g => {
+    g.addEventListener("mousedown", (e) => {
+      if (e.target.classList.contains("brk")) return;   // 拖动优先
+      gapClick = { gap: +g.dataset.gap, x: e.clientX, y: e.clientY };
+    });
+    g.addEventListener("mouseenter", () => {
+      if (brkDrag) g.classList.add("drop-target");
+    });
+    g.addEventListener("mouseleave", () => g.classList.remove("drop-target"));
+  });
+  el.querySelectorAll(".brk").forEach(b => {
+    b.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      brkDrag = { gap: +b.dataset.gap };
+      b.classList.add("dragging");
+    });
+  });
+  el.querySelectorAll(".tok").forEach(c => {
+    c.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      editorSel = { a: +c.dataset.j, b: +c.dataset.j };
+    });
+    c.addEventListener("mouseenter", () => {
+      if (editorSel) {
+        editorSel.b = +c.dataset.j;
+        highlightSel();
+      }
+    });
+  });
+}
+
+function highlightSel() {
+  if (!editorSel) return;
+  const a = Math.min(editorSel.a, editorSel.b);
+  const b = Math.max(editorSel.a, editorSel.b);
+  document.querySelectorAll("#line-editor .tok").forEach(c => {
+    const j = +c.dataset.j;
+    c.classList.toggle("sel", j >= a && j <= b);
+  });
+}
+
+// 编辑器鼠标释放：换行点拖放 / 间隙点击切换 / 拖选锁定 / 单击解锁
+window.addEventListener("mouseup", async (e) => {
+  if (brkDrag) {
+    const from = brkDrag.gap;
+    brkDrag = null;
+    document.querySelectorAll(".brk.dragging")
+      .forEach(x => x.classList.remove("dragging"));
+    const tgt = document.querySelector(".gap.drop-target");
+    document.querySelectorAll(".gap.drop-target")
+      .forEach(x => x.classList.remove("drop-target"));
+    if (tgt) {
+      const to = +tgt.dataset.gap;
+      if (to !== from && to > 0) {
+        const breaks = L.result.breaks.filter(b => b !== from);
+        if (!breaks.includes(to)) breaks.push(to);
+        await saveLayout({ breaks });
+      }
+    }
+    return;
+  }
+  if (gapClick) {
+    const gc = gapClick;
+    gapClick = null;
+    if (Math.abs(e.clientX - gc.x) < 4 && Math.abs(e.clientY - gc.y) < 4 &&
+        gc.gap > 0) {
+      const breaks = L.result.breaks.slice();
+      const i = breaks.indexOf(gc.gap);
+      if (i >= 0) breaks.splice(i, 1); else breaks.push(gc.gap);
+      await saveLayout({ breaks });
+    }
+    return;
+  }
+  if (editorSel) {
+    const sel = editorSel;
+    editorSel = null;
+    document.querySelectorAll("#line-editor .tok.sel")
+      .forEach(c => c.classList.remove("sel"));
+    const a = Math.min(sel.a, sel.b), b = Math.max(sel.a, sel.b);
+    if (a !== b) {                    // 拖选多个词元 → 锁成不可拆单元
+      const overlap = L.result.locks.some(lk => a < lk[1] && lk[0] <= b);
+      if (overlap) {
+        $("editor-msg").textContent = "与现有锁定单元重叠，请先点击解锁。";
+        return;
+      }
+      await saveLayout({ locks: L.result.locks.concat([[a, b + 1]]) });
+    } else {                          // 单击锁内词元 → 解锁
+      const k = L.result.locks.findIndex(lk => lk[0] <= a && a < lk[1]);
+      if (k >= 0) {
+        await saveLayout({ locks: L.result.locks.filter((_, i) => i !== k) });
+      }
+    }
+  }
+});
+
+// ---------------------------------------------------------------- 呈现指标
+function renderLayoutMetrics() {
+  const el = $("layout-metrics");
+  const ag = L.result.aggregates;
+  const d = ag.dwell;
+  const wu = ag.width_usage;
+  const modeTxt = L.settings.mode === "scroll" ? "滚动" : "翻屏";
+  let h = "<table>";
+  h += `<tr><td>行数 / 呈现</td><td class="num">${ag.lines} 行 / ` +
+       `${ag.presentations} 次（${modeTxt}，窗口 ${L.settings.lines} 行）</td></tr>`;
+  h += `<tr><td>驻留时长</td><td class="num">` +
+    (d.defined
+      ? `最短 ${d.min}s ｜ 均值 ${d.mean}s ｜ 最长 ${d.max}s`
+      : '<span class="undef">未定</span>') + `　驻留不足 ${ag.dwell_short} 次</td></tr>`;
+  h += `<tr><td>滚屏频率</td><td class="num">${ag.scroll_events} 次` +
+    (ag.scroll_per_min != null ? `（${ag.scroll_per_min} 次/分）`
+                               : '（<span class="undef">频率未定</span>）') +
+    `</td></tr>`;
+  h += `<tr><td>回读距离</td><td class="num">共 ${ag.re_read_total} 字 ｜ ` +
+       `单次最大 ${ag.re_read_max} 字</td></tr>`;
+  h += `<tr><td>行宽占用</td><td class="num">` +
+    (wu.defined
+      ? `峰值 ${Math.round(wu.max * 100)}% ｜ 均值 ${Math.round(wu.mean * 100)}%`
+      : '<span class="undef">未定（字体度量缺失）</span>') + `</td></tr>`;
+  h += `<tr><td>可读性</td><td class="num">` +
+    (L.result.readability === "ok"
+      ? '<span class="readability ok">通过</span>'
+      : '<span class="readability undefined">未定</span>') +
+    `　未定呈现 ${ag.undefined_presentations}/${ag.presentations}</td></tr>`;
+  h += "</table>";
+  el.innerHTML = h;
+
+  const strip = $("pres-strip");
+  strip.innerHTML = "";
+  for (const p of L.result.presentations) {
+    const d2 = document.createElement("div");
+    d2.className = "pres" + (p.readability !== "ok" ? " bad" : "") +
+      (p.dwell == null ? " undef" : "");
+    d2.style.width = (p.dwell != null
+      ? Math.max(8, Math.min(120, p.dwell * 14)) : 10) + "px";
+    const b = p.begin == null ? "?" : p.begin.toFixed(2);
+    const e2 = p.end == null ? "?" : p.end.toFixed(2);
+    d2.title = `#${p.idx} ${b}–${e2}s 驻留 ` +
+      (p.dwell == null ? "未定" : p.dwell.toFixed(2) + "s") +
+      (p.undefined.length ? "｜未定：" + p.undefined.join("、") : "");
+    if (p.begin != null) d2.addEventListener("click", () => seekTo(p.begin));
+    strip.appendChild(d2);
+  }
+}
+
+// ---------------------------------------------------------------- 可读性问题
+function renderLayoutIssues() {
+  const el = $("layout-issues");
+  const iss = L.result.issues;
+  if (!iss.length) {
+    el.innerHTML = "<div class='none'>未发现可读性问题。</div>";
+    return;
+  }
+  el.innerHTML = "";
+  for (const it of iss) {
+    const div = document.createElement("div");
+    div.className = "issue";
+    const t0 = it.start == null ? "—" : it.start.toFixed(2) + "s";
+    const t1 = it.end == null ? "" : "–" + it.end.toFixed(2) + "s";
+    div.innerHTML = `<span class="t">#${it.id} ${ISSUE_LABEL[it.type] || it.type}` +
+      `</span><span>${it.detail}</span><span class="t">${t0}${t1}</span>`;
+    if (it.start != null) {
+      const b = document.createElement("button");
+      b.textContent = "定位";
+      b.addEventListener("click", () => seekTo(it.start));
+      div.appendChild(b);
+    }
+    el.appendChild(div);
+  }
+}
+
+// ---------------------------------------------------------------- 字幕窗口回放
+function drawCaption() {
+  const cv = $("caption");
+  if (!cv || !L || !S) return;
+  const W = (cv.parentElement.clientWidth || 600) - 24;
+  const H = 300;
+  if (cv.width !== W) cv.width = W;
+  cv.height = H;
+  const g = cv.getContext("2d");
+  const st = L.result.settings;
+  const ar = (L.aspects && L.aspects[st.aspect]) || [16, 9];
+  g.fillStyle = "#05070d";
+  g.fillRect(0, 0, W, H);
+  // 视频帧（按画幅）
+  let fh = H - 16, fw = fh * ar[0] / ar[1];
+  if (fw > W - 16) { fw = W - 16; fh = fw * ar[1] / ar[0]; }
+  const fx = (W - fw) / 2, fy = (H - fh) / 2;
+  g.fillStyle = "#10141f";
+  g.fillRect(fx, fy, fw, fh);
+  g.strokeStyle = "#2a3450";
+  g.strokeRect(fx + 0.5, fy + 0.5, fw - 1, fh - 1);
+  const t = currentTime();
+  // 字幕窗口：假定字幕区占帧宽 86%
+  const scale = fw / (st.line_width / 0.86);
+  const winW = st.line_width * scale;
+  const fs = st.font_size * scale;
+  const lineH = fs * 1.5;
+  const winH = st.lines * lineH;
+  const wx = fx + (fw - winW) / 2;
+  const wy = fy + fh - winH - fh * 0.05;
+  // 依快照时钟定位当前呈现
+  const pres = L.result.presentations || [];
+  let cur = null;
+  for (const p of pres) {
+    if (p.begin != null && p.begin <= t && (p.end == null || t < p.end)) {
+      cur = p;
+      break;
+    }
+  }
+  if (!cur) {
+    for (let i = pres.length - 1; i >= 0; i--) {
+      if (pres[i].begin != null && pres[i].begin <= t) { cur = pres[i]; break; }
+    }
+  }
+  const bad = cur && cur.readability !== "ok";
+  g.fillStyle = "rgba(0,0,0,.55)";
+  g.fillRect(wx, wy, winW, winH);
+  g.strokeStyle = bad ? "#c0392b" : "rgba(255,255,255,.18)";
+  g.lineWidth = bad ? 2 : 1;
+  g.strokeRect(wx + 0.5, wy + 0.5, winW - 1, winH - 1);
+  g.lineWidth = 1;
+  if (cur) {
+    g.save();
+    g.beginPath();
+    g.rect(fx, fy, fw, fh);
+    g.clip();
+    g.font = fs + "px " + st.font_family;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    const a = cur.lines[0], z = cur.lines[1];
+    const shown = L.result.lines.slice(a, z + 1).slice(-st.lines);
+    shown.forEach((ln, r) => {
+      const y = wy + (r + 0.5) * lineH;
+      let text = ln.text;
+      if (ln.idx === z) {          // 末行随播放头逐词出现
+        text = "";
+        for (let j = ln.start; j < ln.end; j++) {
+          const tk = L.result.tokens[j];
+          const tt = L.result.token_times[j];
+          if (tt != null && tt <= t)
+            text += (tk.space_before ? " " : "") + tk.text;
+        }
+      }
+      g.fillStyle = ln.overwide ? "#ff6b5e"
+        : (ln.orphan ? "#f0c96a" : "#ffffff");
+      g.fillText(text, fx + fw / 2, y);
+    });
+    g.restore();
+  }
+  // 信息行
+  const info = $("caption-info");
+  let html;
+  if (!pres.length) {
+    html = "无呈现（无词元）。";
+  } else if (!cur) {
+    html = pres[0] && pres[0].begin != null && t < pres[0].begin
+      ? "字幕尚未出现。"
+      : '呈现时刻 <span class="undef">未定（缺少可用时钟）</span>。';
+  } else {
+    const b = cur.begin == null ? "?" : cur.begin.toFixed(2);
+    const e2 = cur.end == null ? "?" : cur.end.toFixed(2);
+    const dw = cur.dwell == null ? '<span class="undef">未定</span>'
+      : cur.dwell.toFixed(2) + "s";
+    const us = cur.width_usage == null ? '<span class="undef">未定</span>'
+      : Math.round(cur.width_usage * 100) + "%";
+    const rb = cur.readability === "ok"
+      ? '<span class="ok">正常</span>' : '<span class="undef">未定</span>';
+    html = `呈现 #${cur.idx}（${b}–${e2}s）驻留 ${dw} ｜ 行宽占用 ${us} ｜ ` +
+           `回读 ${cur.re_read} 字 ｜ 可读性 ${rb}`;
+  }
+  if (info._last !== html) { info.innerHTML = html; info._last = html; }
+}

@@ -334,13 +334,27 @@ def build_presentations(lines, times, tok_undef, settings, coverage_end,
                 "re_read": (sum(line_chars[s - n_lines:s]) if q else 0),
             })
             q += 1
+    # 呈现按构造有序：词元出现时刻存在抖动（同一快照节拍内先后不定），
+    # 窄行配置下行首词元时刻序列不再单调。开始时刻取累计最大值，
+    # 结束时刻不早于开始时刻——任何配置下驻留不为负。
+    prev_b = None
+    for p in pres:
+        b = p["begin"]
+        if b is not None and prev_b is not None and b < prev_b:
+            b = prev_b
+        p["begin"] = b
+        if b is not None:
+            prev_b = b
     for i, p in enumerate(pres):
         nxt = pres[i + 1]["begin"] if i + 1 < len(pres) else coverage_end
+        b = p["begin"]
+        if b is not None and nxt is not None and nxt < b:
+            nxt = b
         p["end"] = nxt
-        b, e = p["begin"], p["end"]
-        p["dwell"] = round(e - b, 3) \
-            if (b is not None and e is not None) else None
+        p["dwell"] = round(nxt - b, 3) \
+            if (b is not None and nxt is not None) else None
         # 时标未定原因：窗口内词元的未定标记 ∪ 区间覆盖的缺页
+        e = p["end"]
         undef = set()
         a, z = p["lines"]
         for k in range(a, z + 1):
