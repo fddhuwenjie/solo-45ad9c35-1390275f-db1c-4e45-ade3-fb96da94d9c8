@@ -485,23 +485,40 @@ def _stats(vals):
 
 
 def aggregate(token_metrics):
-    """由词元指标聚合整体指标；recess_excluded 词元不计入。"""
+    """由词元指标聚合整体指标；recess_excluded 词元不计入。
+
+    任一计入词元的改写/撤回计数未定（如快照缺页）时，总数与派生
+    聚合同样保持未定（None），不对缺失页内的未知变化给出确定值。
+    """
     counted = [t for t in token_metrics
                if "recess_excluded" not in t["flags"]]
     first_ok = [t["first_latency"] for t in counted
                 if not t["undefined"] and t["first_latency"] is not None]
     stable_ok = [t["stable_latency"] for t in counted
                  if not t["undefined"] and t["stable_latency"] is not None]
+    counts_defined = all(
+        t["replace_count"] is not None and t["retract_count"] is not None
+        for t in counted)
+    if counts_defined:
+        replace_total = sum(t["replace_count"] for t in counted)
+        retract_total = sum(t["retract_count"] for t in counted)
+        rewritten = sum(1 for t in counted if t["replace_count"])
+        retracted = sum(1 for t in counted if t["retract_count"])
+    else:
+        replace_total = retract_total = rewritten = retracted = None
     return {
         "token_count": len(token_metrics),
         "counted": len(counted),
         "undefined_tokens": sum(1 for t in token_metrics if t["undefined"]),
         "first_latency": _stats(first_ok),
         "stable_latency": _stats(stable_ok),
-        "replace_total": sum(t["replace_count"] for t in counted),
-        "retract_total": sum(t["retract_count"] for t in counted),
-        "rewritten_tokens": sum(1 for t in counted if t["replace_count"]),
-        "retracted_tokens": sum(1 for t in counted if t["retract_count"]),
+        "counts_defined": counts_defined,
+        "counts_undefined_reason": (None if counts_defined
+                                    else "snapshot_gap"),
+        "replace_total": replace_total,
+        "retract_total": retract_total,
+        "rewritten_tokens": rewritten,
+        "retracted_tokens": retracted,
     }
 
 

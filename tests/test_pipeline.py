@@ -56,9 +56,24 @@ def main():
           json.dumps(ag["first_latency"]))
     check("稳定延迟 >= 首显延迟",
           ag["stable_latency"]["mean"] >= ag["first_latency"]["mean"])
-    check("存在改写词元", ag["rewritten_tokens"] >= 5,
-          str(ag["rewritten_tokens"]))
-    check("存在撤回词元", ag["retracted_tokens"] >= 1)
+    check("存在改写词元",
+          sum(1 for t in st["tokens"]
+              if t["replace_count"] and t["replace_count"] >= 1) >= 5)
+    check("存在撤回词元",
+          any(t["retract_count"] and t["retract_count"] >= 1
+              for t in st["tokens"]))
+    # 缺页新语义：跨缺口文本变化的词元计数未定，聚合总数同步未定
+    none_counts = [t for t in st["tokens"] if t["replace_count"] is None]
+    check("缺页影响词元计数未定", len(none_counts) >= 1,
+          str(len(none_counts)))
+    check("缺页影响词元撤回数同样未定",
+          all(t["retract_count"] is None for t in none_counts))
+    check("聚合改写总数未定", ag["replace_total"] is None)
+    check("聚合撤回总数未定", ag["retract_total"] is None)
+    check("派生聚合(改写词元数)未定", ag["rewritten_tokens"] is None)
+    check("计数未定原因标记为缺页",
+          ag["counts_defined"] is False
+          and ag["counts_undefined_reason"] == "snapshot_gap")
     iv = st["interval_metrics"]
     check("阅读速度已定义", iv["reading_speed"]["defined"],
           json.dumps(iv["reading_speed"]))
@@ -208,16 +223,24 @@ def main():
     check("覆盖不完整时无字幕区间未定",
           not st["interval_metrics"]["uncaptioned"]["defined"])
 
-    # 4d. 无锚点
+    # 4d. 无锚点（用连续编号的日志，隔离缺页因素）
     store5, tmp5 = fresh_store()
     paths = make_demo.build(os.path.join(tmp5, "demo"))
+    objs = [json.loads(x) for x in
+            open(paths["log"], encoding="utf-8").read().splitlines()]
+    for k, o in enumerate(objs, 1):
+        o["seq"] = k  # 重排为连续序号 → 无缺页
+    with open(paths["log"], "w", encoding="utf-8") as f:
+        for o in objs:
+            f.write(json.dumps(o, ensure_ascii=False) + "\n")
     sid5 = engine.import_session(store5, "t5", paths["audio"],
                                  paths["reference"], paths["log"], None)
     st = engine.state(store5, sid5)
     check("无锚点时延迟未定",
           all("no_anchor" in t["undefined"] for t in st["tokens"]))
     check("无锚点时改写计数仍可用",
-          st["aggregates"]["replace_total"] > 0)
+          st["aggregates"]["counts_defined"] is True
+          and st["aggregates"]["replace_total"] > 0)
 
     print("\n通过 %d 项，失败 %d 项" % (PASS, FAIL))
     shutil.rmtree(tmp, ignore_errors=True)

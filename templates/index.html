@@ -11,11 +11,22 @@
   <div id="sess-bar">
     <select id="sess-select"></select>
     <button id="btn-new-demo">新建演示会话</button>
+    <button id="btn-toggle-upload">导入材料</button>
     <span id="sess-status" class="badge"></span>
     <span id="sess-digest" class="mono"></span>
     <button id="btn-confirm" class="primary">确认锁定</button>
     <span id="export-links"></span>
   </div>
+  <form id="upload-form" hidden>
+    <span class="hint">PCM WAV + 参考稿 + 快照日志（JSONL，含 seq/log_ts/text）；锚点 JSON 可选</span>
+    <input type="text" name="name" placeholder="会话名称">
+    <label>音频 <input type="file" name="audio" accept=".wav" required></label>
+    <label>参考稿 <input type="file" name="reference" accept=".txt" required></label>
+    <label>快照日志 <input type="file" name="log" accept=".jsonl,.txt" required></label>
+    <label>锚点 <input type="file" name="anchors" accept=".json"></label>
+    <button type="submit" class="primary">上传并计算</button>
+    <span id="upload-msg"></span>
+  </form>
 </header>
 
 <div id="main">

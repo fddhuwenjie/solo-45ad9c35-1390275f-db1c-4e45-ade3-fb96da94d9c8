@@ -3,8 +3,8 @@
 运行：PYTHONPATH=/tmp/pylibs/local/lib/python3.11/dist-packages python3 app.py
 """
 
-import json
 import os
+import time
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
@@ -12,9 +12,10 @@ from livereview import engine
 from livereview.store import Store
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
-DB_PATH = os.path.join(DATA, "review.db")
+DATA = os.environ.get("LIVEREVIEW_DATA", os.path.join(BASE, "data"))
+DB_PATH = os.environ.get("LIVEREVIEW_DB", os.path.join(DATA, "review.db"))
 EXPORT_ROOT = os.path.join(DATA, "exports")
+UPLOAD_ROOT = os.path.join(DATA, "uploads")
 
 app = Flask(__name__)
 store = Store(DB_PATH)
@@ -57,6 +58,48 @@ def demo():
         store, "演示讲座", paths["audio"], paths["reference"],
         paths["log"], paths["anchors"])
     return jsonify({"id": sid})
+
+
+@app.post("/api/session/import")
+def import_materials():
+    """接收用户材料：PCM WAV、参考稿、带时标快照日志（锚点可选）。"""
+    name = (request.form.get("name") or "").strip() or "未命名会话"
+    audio = request.files.get("audio")
+    ref = request.files.get("reference")
+    log = request.files.get("log")
+    anchors = request.files.get("anchors")
+    if not (audio and audio.filename):
+        abort(400, "缺少 PCM WAV 音频文件")
+    if not (ref and ref.filename):
+        abort(400, "缺少参考稿")
+    if not (log and log.filename):
+        abort(400, "缺少快照日志")
+    if not audio.filename.lower().endswith(".wav"):
+        abort(400, "音频必须是 WAV 文件")
+
+    updir = os.path.join(UPLOAD_ROOT, "%d" % (time.time() * 1000))
+    os.makedirs(updir, exist_ok=True)
+    apath = os.path.join(updir, "audio.wav")
+    rpath = os.path.join(updir, "reference.txt")
+    lpath = os.path.join(updir, "snapshots.jsonl")
+    audio.save(apath)
+    ref.save(rpath)
+    log.save(lpath)
+    anpath = None
+    if anchors and anchors.filename:
+        anpath = os.path.join(updir, "anchors.json")
+        anchors.save(anpath)
+
+    def _import():
+        try:
+            return {"id": engine.import_session(
+                store, name, apath, rpath, lpath, anpath)}
+        except ValueError:
+            # 材料不可用时清理已保存文件，避免留下坏会话
+            import shutil
+            shutil.rmtree(updir, ignore_errors=True)
+            raise
+    return _err(_import)
 
 
 @app.get("/api/session/<int:sid>/state")
