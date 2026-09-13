@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>实时字幕延迟与改写复盘</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>实时字幕延迟与改写复盘</h1>
+  <div id="sess-bar">
+    <select id="sess-select"></select>
+    <button id="btn-new-demo">新建演示会话</button>
+    <span id="sess-status" class="badge"></span>
+    <span id="sess-digest" class="mono"></span>
+    <button id="btn-confirm" class="primary">确认锁定</button>
+    <span id="export-links"></span>
+  </div>
+</header>
+
+<div id="main">
+  <section id="left">
+    <div class="panel">
+      <h2>音频 <span class="hint">点击波形定位；「圈休会」模式下拖选时段</span></h2>
+      <div class="wave-wrap">
+        <canvas id="wave" height="90"></canvas>
+        <div id="wave-playhead" class="playhead"></div>
+        <div id="wave-sel" class="sel"></div>
+      </div>
+      <div class="transport">
+        <button id="btn-play">▶ 播放</button>
+        <span id="time-label" class="mono">0.00 / 0.00</span>
+        <button id="btn-recess-mode">圈休会</button>
+        <span id="recess-list"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>整体指标</h2>
+      <div id="metrics"></div>
+    </div>
+
+    <div class="panel">
+      <h2>日志完整性</h2>
+      <div id="flags"></div>
+    </div>
+
+    <div class="panel">
+      <h2>时钟锚点 <span class="hint">日志钟 → 音频钟；残差超阈值时延迟指标未定</span></h2>
+      <table id="anchor-table">
+        <thead><tr><th>日志时刻 s</th><th>音频时刻 s</th><th>残差</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row">
+        <button id="btn-add-anchor">添加锚点</button>
+        <button id="btn-save-anchors" class="primary">保存锚点</button>
+        <span id="anchor-msg"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>话语划分 <span class="hint">用于修正 WebVTT 的 cue</span></h2>
+      <div id="utterances"></div>
+    </div>
+
+    <div class="panel">
+      <h2>重算记录 <span class="hint">调整后只重算受影响区间</span></h2>
+      <div id="recompute-log"></div>
+    </div>
+  </section>
+
+  <section id="right">
+    <div class="panel">
+      <h2>字幕演变带 <span class="hint">行=终稿词元，列=快照；点击词元查看详情</span></h2>
+      <div class="legend">
+        <span class="sw absent"></span>未显示
+        <span class="sw draft"></span>草稿(与终稿不同)
+        <span class="sw unstable"></span>已正确仍会改
+        <span class="sw stable"></span>已稳定
+        <span class="sw retracted"></span>被撤回
+      </div>
+      <div id="band-wrap">
+        <canvas id="band"></canvas>
+        <div id="band-playhead" class="playhead"></div>
+        <div id="band-tooltip"></div>
+      </div>
+    </div>
+
+    <div class="panel" id="detail-panel">
+      <h2>词元详情</h2>
+      <div id="token-detail"><p class="hint">在演变带中点击一个词元。</p></div>
+    </div>
+  </section>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
