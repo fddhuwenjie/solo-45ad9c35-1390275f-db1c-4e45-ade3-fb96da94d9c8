@@ -159,6 +159,32 @@ def confirm(sid):
                                        os.path.join(EXPORT_ROOT, str(sid))))
 
 
+@app.get("/api/session/<int:sid>/layout")
+def get_layout(sid):
+    """当前版面状态与全量复核结果（每次读取现算）。"""
+    return _err(lambda: engine.get_layout(store, sid))
+
+
+@app.post("/api/session/<int:sid>/layout/revise")
+def layout_revise(sid):
+    """校审员的一次版面调整：另存一条 SQLite 修订。"""
+    return _err(lambda: engine.op_layout_revise(
+        store, sid, request.get_json(force=True)))
+
+
+@app.get("/api/fonts")
+def fonts():
+    return jsonify(engine.list_fonts(store))
+
+
+@app.put("/api/fonts/<family>/metrics")
+def font_metrics(family):
+    """登记浏览器实测的字体度量（Canvas measureText 探针）。"""
+    p = request.get_json(force=True)
+    units = p.get("units") if isinstance(p, dict) and "units" in p else p
+    return _err(lambda: engine.op_font_metrics(store, family, units))
+
+
 @app.get("/api/session/<int:sid>/export/<kind>")
 def export(sid, kind):
     sess = store.get_session(sid)
@@ -171,7 +197,12 @@ def export(sid, kind):
     if not path or not os.path.exists(path):
         abort(404)
     mime = {"vtt": "text/vtt", "csv": "text/csv",
-            "svg": "image/svg+xml", "json": "application/json"}[kind]
+            "svg": "image/svg+xml", "json": "application/json",
+            "breaks_vtt": "text/vtt", "issues_csv": "text/csv",
+            "window_svg": "image/svg+xml",
+            "layout_json": "application/json"}.get(kind)
+    if mime is None:
+        abort(404)
     return send_file(path, mimetype=mime, as_attachment=True,
                      download_name=os.path.basename(path))
 

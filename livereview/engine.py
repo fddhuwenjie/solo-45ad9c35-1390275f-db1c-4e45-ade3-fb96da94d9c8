@@ -3,7 +3,7 @@
 import json
 import os
 
-from . import exports, pipeline
+from . import exports, layout, pipeline
 from .pipeline import Ctx, DEFAULT_PARAMS
 from .textnorm import join_tokens
 
@@ -41,6 +41,8 @@ def import_session(store, name, audio_path, ref_path, log_path,
     utts = _initial_utterances(ctx)
     store.set_utterances(sid, utts)
     ctx.utterances = utts
+    # 版面复核的初始修订（默认设置、无手动换行/锁定）
+    store.add_layout_revision(sid, layout.default_payload(), None)
     _full_recompute(store, sid, ctx, reason="import")
     return sid
 
@@ -267,6 +269,96 @@ def op_set_recess(store, sid, ranges):
     return state(store, sid)
 
 
+# ---------------------------------------------------------------- 断行与滚屏复核
+
+def _font_units(store, family):
+    """字体度量：浏览器实测（SQLite）优先，其次内置表；都没有 → None。"""
+    m = store.get_font_metrics(family)
+    if m:
+        return m["units"], "measured"
+    if family in layout.BUILTIN_METRICS:
+        return layout.BUILTIN_METRICS[family], "builtin"
+    return None, None
+
+
+def list_fonts(store):
+    """已知字体及其度量可用性（内置 + 浏览器实测）。"""
+    out = [{"family": f, "metrics": True, "source": "builtin"}
+           for f in layout.BUILTIN_METRICS]
+    for m in store.list_font_metrics():
+        out.append({"family": m["font_family"], "metrics": True,
+                    "source": m["source"]})
+    return out
+
+
+def get_layout(store, sid):
+    """当前版面状态 + 全量复核计算（每次读取现算，保证与词元指标一致）。"""
+    sess = store.get_session(sid)
+    if not sess:
+        raise KeyError("会话不存在：%s" % sid)
+    ctx = build_ctx(store, sid)
+    rev = store.get_layout_revision(sid)
+    if rev is None:
+        payload, revno, created = layout.default_payload(), 0, None
+    else:
+        payload = layout.validate_payload(ctx, rev["payload"])
+        revno, created = rev["rev"], rev["created"]
+    units, unit_src = _font_units(store, payload["settings"]["font_family"])
+    result = layout.compute(ctx, store.get_token_metrics(sid), payload, units)
+    return {
+        "revision": revno, "created": created,
+        "revisions": store.list_layout_revisions(sid),
+        "settings": result["settings"],
+        "breaks": result["breaks"], "locks": result["locks"],
+        "font": {"family": payload["settings"]["font_family"],
+                 "metrics": units is not None, "source": unit_src},
+        "fonts": list_fonts(store),
+        "aspects": layout.ASPECTS,
+        "modes": list(layout.MODES),
+        "result": result,
+        "locked": sess["status"] != "open",
+    }
+
+
+def op_layout_revise(store, sid, payload):
+    """校审员的一次版面调整：另存一条 SQLite 修订并返回最新复核结果。"""
+    _require_open(store, sid)
+    ctx = build_ctx(store, sid)
+    cur = store.get_layout_revision(sid)
+    base = cur["payload"] if cur else layout.default_payload()
+    merged = {
+        "settings": dict(base["settings"],
+                         **(payload.get("settings") or {})),
+        "breaks": payload["breaks"] if "breaks" in payload else base["breaks"],
+        "locks": payload["locks"] if "locks" in payload else base["locks"],
+    }
+    clean = layout.validate_payload(ctx, merged)
+    units, _ = _font_units(store, clean["settings"]["font_family"])
+    result = layout.compute(ctx, store.get_token_metrics(sid), clean, units)
+    summary = {"aggregates": result["aggregates"],
+               "readability": result["readability"],
+               "issues": len(result["issues"])}
+    rev = store.add_layout_revision(sid, clean, summary)
+    store.add_edit(sid, "layout_revise",
+                   {"rev": rev, "settings": clean["settings"],
+                    "breaks": len(clean["breaks"]),
+                    "locks": len(clean["locks"])})
+    _append_recompute_log(store, sid, {
+        "reason": "layout_revise(r%d)" % rev, "scope": "layout",
+        "tokens_recomputed": 0, "intervals": False})
+    return get_layout(store, sid)
+
+
+def op_font_metrics(store, family, units, source="browser"):
+    """登记浏览器实测的字体度量（Canvas measureText 探针）。"""
+    family = (family or "").strip()[:60]
+    if not family:
+        raise ValueError("字体名不能为空")
+    clean = layout.validate_units(units)
+    store.set_font_metrics(family, clean, source)
+    return {"family": family, "metrics": True, "source": source}
+
+
 # ---------------------------------------------------------------- 状态
 
 def state(store, sid):
@@ -341,13 +433,20 @@ def confirm(store, sid, export_dir):
     digests = {"audio_sha256": sess["audio_sha256"],
                "ref_sha256": sess["ref_sha256"],
                "log_sha256": sess["log_sha256"]}
+    # 定稿版面：样式、断行、锁定与滚屏模式随会话一并锁定
+    lay = get_layout(store, sid)
+    lay_result = lay["result"]
     # 锁定摘要：日志 + 对齐 + 人工决定 + 参数
     lock_payload = json.dumps({
         "digests": digests,
         "alignment": {"mapping": ctx.mapping, "status": ctx.status,
                       "ambiguous_blocks": ctx.ambig_blocks},
         "decisions": {"anchors": ctx.anchors, "rebinds": ctx.rebinds,
-                      "utterances": ctx.utterances, "recess": ctx.recess},
+                      "utterances": ctx.utterances, "recess": ctx.recess,
+                      "layout": {"revision": lay["revision"],
+                                 "settings": lay["settings"],
+                                 "breaks": lay["breaks"],
+                                 "locks": lay["locks"]}},
         "params": ctx.params,
     }, ensure_ascii=False, sort_keys=True)
     import hashlib
@@ -355,16 +454,23 @@ def confirm(store, sid, export_dir):
 
     os.makedirs(export_dir, exist_ok=True)
     token_metrics_list = tokens
+    tm_map = _token_metric_map(ctx, cached)
     files = {
-        "vtt": exports.export_webvtt(ctx, _token_metric_map(ctx, cached)),
+        "vtt": exports.export_webvtt(ctx, tm_map),
         "csv": exports.export_csv(token_metrics_list),
         "svg": exports.export_svg(ctx, token_metrics_list, intervals),
         "json": exports.export_json(sess, ctx, token_metrics_list, aggs,
                                     intervals, recompute_log, digests),
+        "breaks_vtt": exports.export_layout_vtt(ctx, tm_map, lay_result),
+        "issues_csv": exports.export_issues_csv(lay_result),
+        "window_svg": exports.export_window_svg(lay_result),
+        "layout_json": exports.export_layout_json(sess, lay, digests),
     }
     paths = {}
     names = {"vtt": "corrected.vtt", "csv": "words.csv",
-             "svg": "latency.svg", "json": "recompute.json"}
+             "svg": "latency.svg", "json": "recompute.json",
+             "breaks_vtt": "broken.vtt", "issues_csv": "issues.csv",
+             "window_svg": "window.svg", "layout_json": "layout.json"}
     for kind, content in files.items():
         p = os.path.join(export_dir, names[kind])
         with open(p, "w", encoding="utf-8") as f:

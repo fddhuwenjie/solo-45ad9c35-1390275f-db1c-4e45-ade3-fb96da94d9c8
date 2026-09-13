@@ -4,6 +4,8 @@ import csv
 import io
 import json
 
+from .layout import ASPECTS, join_display
+
 
 def _vtt_ts(t):
     t = max(0.0, t or 0.0)
@@ -199,4 +201,153 @@ def export_json(session, ctx, token_metrics_list, aggregates,
         "interval_metrics": interval_metrics,
         "token_metrics": token_metrics_list,
         "recompute_log": recompute_log,
+    }, ensure_ascii=False, indent=1)
+
+
+# ---------------------------------------------------------------- 版面复核导出
+
+def export_layout_vtt(ctx, token_metrics, layout_result):
+    """带换行的 WebVTT：按话语切 cue，cue 内按版面行断行。"""
+    times = _utterance_times(ctx, token_metrics)
+    line_of = {}
+    for ln in layout_result["lines"]:
+        for j in range(ln["start"], ln["end"]):
+            line_of[j] = ln["idx"]
+    toks = layout_result["tokens"]
+    out = ["WEBVTT", ""]
+    for k, utt in enumerate(ctx.utterances, 1):
+        start, end = times[k - 1]
+        parts, cur, cur_line = [], [], None
+        for j in range(utt["start"], utt["end"]):
+            li = line_of.get(j)
+            if cur_line is not None and li != cur_line:
+                parts.append(join_display(cur))
+                cur = []
+            cur.append(toks[j])
+            cur_line = li
+        if cur:
+            parts.append(join_display(cur))
+        out.append(str(k))
+        out.append("%s --> %s" % (_vtt_ts(start), _vtt_ts(end)))
+        out.append("\n".join(parts))
+        out.append("")
+    return "\n".join(out)
+
+
+def export_issues_csv(layout_result):
+    """可读性问题 CSV（utf-8-sig）。"""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["issue_id", "type", "line", "presentation",
+                "start_s", "end_s", "detail"])
+    for it in layout_result["issues"]:
+        w.writerow([it["id"], it["type"],
+                    _n(it.get("line")), _n(it.get("presentation")),
+                    _n(it.get("start")), _n(it.get("end")), it["detail"]])
+    return "﻿" + buf.getvalue()
+
+
+def _esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def export_window_svg(layout_result):
+    """窗口预览 SVG：各次呈现的字幕窗口缩略图，问题呈现红框标出。"""
+    from .layout import ASPECTS
+    st = layout_result["settings"]
+    ar_w, ar_h = ASPECTS[st["aspect"]]
+    pres = layout_result["presentations"]
+    lines = layout_result["lines"]
+    issue_pres = {it["presentation"] for it in layout_result["issues"]
+                  if it["presentation"] is not None}
+    # 抽样：呈现过多时均匀抽取，避免文件过大
+    MAXF = 24
+    if len(pres) > MAXF:
+        step = len(pres) / MAXF
+        show = [pres[int(i * step)] for i in range(MAXF)]
+    else:
+        show = list(pres)
+    fw = 280.0
+    fh = fw * ar_h / ar_w
+    if fh > 300:
+        fh, fw = 300.0, 300.0 * ar_w / ar_h
+    cols = 4
+    rows = (len(show) + cols - 1) // cols
+    cap_h = 34
+    W = int(cols * (fw + 14) + 14)
+    H = int(rows * (fh + cap_h + 14) + 46)
+    p = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+         'viewBox="0 0 %d %d" font-family="sans-serif" font-size="11">'
+         % (W, H, W, H),
+         '<rect width="%d" height="%d" fill="#fff"/>' % (W, H),
+         '<text x="14" y="20" font-size="13" font-weight="bold">字幕窗口预览'
+         '（画幅 %s，%d 行，行宽 %dpx，%s）</text>'
+         % (st["aspect"], st["lines"], st["line_width"],
+            "逐行滚动" if st["mode"] == "scroll" else "整屏替换"),
+         '<text x="14" y="36" fill="#666">红框 = 存在可读性问题（可读性未定）；'
+         '每图下方为驻留时长与行宽占用</text>']
+    # 视频帧宽度假定：字幕区占帧宽 86%
+    frame_w_px = st["line_width"] / 0.86
+    scale = fw / frame_w_px
+    win_w = st["line_width"] * scale
+    fs = st["font_size"] * scale
+    line_h = fs * 1.5
+    win_h = st["lines"] * line_h
+    for i, pr in enumerate(show):
+        cx = 14 + (i % cols) * (fw + 14)
+        cy = 46 + (i // cols) * (fh + cap_h + 14)
+        bad = pr["idx"] in issue_pres or pr["readability"] != "ok"
+        p.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
+                 'fill="#10141f" stroke="%s" stroke-width="2"/>'
+                 % (cx, cy, fw, fh, "#c0392b" if bad else "#2f9e54"))
+        wx = cx + (fw - win_w) / 2
+        wy = cy + fh - win_h - fh * 0.05
+        p.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
+                 'fill="#000" opacity="0.55"/>' % (wx, wy, win_w, win_h))
+        a, z = pr["lines"]
+        shown = lines[a:z + 1][-st["lines"]:]
+        for r, ln in enumerate(shown):
+            ty = wy + (r + 0.5) * line_h + fs * 0.35
+            color = "#fff"
+            if ln["overwide"]:
+                color = "#ff6b5e"
+            elif ln["orphan"]:
+                color = "#f0c96a"
+            p.append('<text x="%.1f" y="%.1f" font-size="%.1f" '
+                     'text-anchor="middle" fill="%s">%s</text>'
+                     % (cx + fw / 2, ty, fs, color, _esc(ln["text"])))
+        dwell = ("%.2fs" % pr["dwell"]) if pr["dwell"] is not None else "未定"
+        usage = ("%.0f%%" % (pr["width_usage"] * 100)) \
+            if pr["width_usage"] is not None else "未定"
+        p.append('<text x="%.1f" y="%.1f" fill="#333">#%d 驻留 %s｜行宽 %s｜'
+                 '回读 %d 字</text>'
+                 % (cx, cy + fh + 14, pr["idx"], dwell, usage, pr["re_read"]))
+        if pr["scroll"]:
+            p.append('<text x="%.1f" y="%.1f" fill="#888">%s</text>'
+                     % (cx, cy + fh + 27,
+                        "滚动入行" if pr["kind"] == "scroll" else "整屏替换"))
+    p.append("</svg>")
+    return "\n".join(p)
+
+
+def export_layout_json(session, lay_state, digests):
+    """版面复算 JSON：样式、断行、人工决定与全部复核指标。"""
+    r = lay_state["result"]
+    return json.dumps({
+        "session": {"id": session["id"], "name": session["name"],
+                    "status": session["status"]},
+        "digests": digests,
+        "layout_revision": lay_state["revision"],
+        "settings": r["settings"],
+        "decisions": {"breaks": r["breaks"], "locks": r["locks"]},
+        "font": lay_state["font"],
+        "tokens": r["tokens"],
+        "token_times": r["token_times"],
+        "lines": r["lines"],
+        "presentations": r["presentations"],
+        "issues": r["issues"],
+        "aggregates": r["aggregates"],
+        "readability": r["readability"],
+        "aspects": sorted(ASPECTS),
     }, ensure_ascii=False, indent=1)

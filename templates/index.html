@@ -81,6 +81,34 @@
   </section>
 
   <section id="right">
+    <div class="panel" id="caption-panel">
+      <h2>字幕窗口 <span class="hint">依快照时钟还原，跟随音频播放头；<span class="lg over">红</span>=超宽 <span class="lg orph">黄</span>=孤行 <span class="lg lockb">框</span>=锁定单元</span></h2>
+      <canvas id="caption" height="300"></canvas>
+      <div id="caption-info" class="mono"></div>
+    </div>
+
+    <div class="panel">
+      <h2>版面设置 <span class="hint">画幅 / 字体 / 字号 / 行数 / 行宽 / 最短驻留；每次保存另存一条修订</span></h2>
+      <div id="layout-settings"></div>
+    </div>
+
+    <div class="panel">
+      <h2>断行与锁定 <span class="hint">点击词元间隙切换换行点；拖动换行点可移动；拖选多个词元锁成不可拆单元，点击锁解开</span></h2>
+      <div id="line-editor"></div>
+      <div id="editor-msg" class="hint"></div>
+    </div>
+
+    <div class="panel">
+      <h2>呈现与滚屏指标 <span class="hint">每次呈现的驻留、行宽占用、回读距离；点击色块定位</span></h2>
+      <div id="layout-metrics"></div>
+      <div id="pres-strip"></div>
+    </div>
+
+    <div class="panel">
+      <h2>可读性问题 <span class="hint">点击定位到对应时段；存在问题时可读性为未定</span></h2>
+      <div id="layout-issues"></div>
+    </div>
+
     <div class="panel">
       <h2>字幕演变带 <span class="hint">行=终稿词元，列=快照；点击词元查看详情</span></h2>
       <div class="legend">

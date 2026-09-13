@@ -146,3 +146,86 @@ button.active { background: #6b4a12; border-color: #a3741c; }
 .status-tag.match { background: #2b4a2f; color: #9fe6a8; }
 .status-tag.sub, .status-tag.rebind { background: #4a3a1e; color: #f0c96a; }
 .status-tag.extra, .status-tag.ambiguous { background: #4a2424; color: #f09a9a; }
+
+/* ---------------------------------------------------------------- 字幕窗口 */
+#caption-panel canvas {
+  width: 100%; display: block; background: #05070d; border-radius: 4px;
+}
+#caption-info { margin-top: 6px; color: #9aa5bb; }
+#caption-info .undef { color: #f0c96a; }
+
+/* 版面设置 */
+#layout-settings { display: flex; flex-wrap: wrap; gap: 8px 16px;
+  align-items: center; font-size: 13px; }
+#layout-settings label { display: flex; gap: 6px; align-items: center; }
+#layout-settings input, #layout-settings select {
+  background: #0f1420; color: #dde3ee; border: 1px solid #39415a;
+  border-radius: 4px; padding: 3px 6px; width: 84px; }
+#layout-settings select { width: auto; }
+#layout-settings .font-state { font-size: 12px; }
+#layout-settings .font-state.missing { color: #f0c96a; }
+#layout-settings .font-state.ok { color: #9fe6a8; }
+
+/* 断行编辑器 */
+#line-editor { font-size: 15px; line-height: 2.1; user-select: none; }
+#line-editor .lrow { display: flex; flex-wrap: wrap; align-items: center;
+  border-bottom: 1px dashed #232c44; padding: 2px 0; position: relative; }
+#line-editor .lrow .lno { color: #55617c; font-size: 11px; min-width: 26px;
+  font-family: ui-monospace, Consolas, monospace; }
+#line-editor .lrow .usage { margin-left: auto; font-size: 11px;
+  color: #7c8698; font-family: ui-monospace, Consolas, monospace; }
+#line-editor .lrow .usage.over { color: #ff6b5e; font-weight: bold; }
+#line-editor .lrow.orphan-row { background: rgba(240,201,106,.06); }
+.tok { display: inline-block; padding: 0 3px; margin: 1px 0; border-radius: 3px;
+  cursor: crosshair; position: relative; }
+.tok:hover { background: #22304e; }
+.tok.locked { background: #22304e; box-shadow: inset 0 -2px 0 #6db3f2; }
+.tok.lock-head { box-shadow: inset 0 -2px 0 #6db3f2, inset 2px 0 0 #6db3f2; }
+.tok.lock-tail { box-shadow: inset 0 -2px 0 #6db3f2, inset -2px 0 0 #6db3f2; }
+.tok.lock-split { box-shadow: inset 0 -2px 0 #c0392b; }
+.tok.sel { background: #2d3854; }
+.gap { display: inline-block; width: 10px; height: 26px; margin: 0 1px;
+  cursor: pointer; position: relative; vertical-align: middle; }
+.gap:hover { background: #2d385466; }
+.brk { position: absolute; left: 1px; top: 2px; bottom: 2px; width: 8px;
+  border-radius: 2px; cursor: grab; }
+.brk.auto { background: #39415a; }
+.brk.manual { background: #f0c96a; }
+.brk.dragging { background: #6db3f2; }
+.gap.drop-target { outline: 2px solid #6db3f2; }
+#editor-msg { margin-top: 4px; }
+
+/* 呈现指标 */
+#layout-metrics table { border-collapse: collapse; width: 100%; }
+#layout-metrics td, #layout-metrics th { border-bottom: 1px solid #232c44;
+  padding: 3px 6px; text-align: left; font-size: 13px; }
+#pres-strip { display: flex; gap: 2px; margin-top: 8px; align-items: flex-end;
+  min-height: 34px; overflow-x: auto; padding-bottom: 2px; }
+#pres-strip .pres { min-width: 8px; height: 30px; border-radius: 2px;
+  background: #2f9e54; cursor: pointer; position: relative; flex: none; }
+#pres-strip .pres.bad { background: #c0392b; }
+#pres-strip .pres.undef { background: #8a6d1c; }
+#pres-strip .pres:hover { outline: 1px solid #dde3ee; }
+#pres-strip .pres .tip { display: none; position: absolute; bottom: 34px;
+  left: 0; background: #000c; border: 1px solid #39415a; border-radius: 4px;
+  padding: 3px 8px; font-size: 11px; white-space: nowrap; z-index: 6; }
+#pres-strip .pres:hover .tip { display: block; }
+
+/* 可读性问题 */
+#layout-issues .issue { padding: 4px 6px; margin: 3px 0; border-radius: 4px;
+  background: #2a2333; border-left: 3px solid #c0392b; font-size: 12px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#layout-issues .issue .t { color: #8fa3c8; font-family: ui-monospace,
+  Consolas, monospace; }
+#layout-issues .issue button { font-size: 11px; padding: 1px 8px; }
+#layout-issues .none { color: #9fe6a8; font-size: 12px; }
+.readability { padding: 1px 10px; border-radius: 10px; font-size: 12px; }
+.readability.ok { background: #2b4a2f; color: #9fe6a8; }
+.readability.undefined { background: #4a3a1e; color: #f0c96a; }
+
+/* 图例色样 */
+.lg { display: inline-block; padding: 0 4px; border-radius: 3px;
+  font-size: 11px; }
+.lg.over { background: #4a2424; color: #ff6b5e; }
+.lg.orph { background: #4a3a1e; color: #f0c96a; }
+.lg.lockb { background: #22304e; color: #6db3f2; }

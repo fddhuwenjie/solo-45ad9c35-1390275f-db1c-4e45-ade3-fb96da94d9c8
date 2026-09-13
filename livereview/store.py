@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS confirmations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INT, digest TEXT, created REAL, exports TEXT
 );
+CREATE TABLE IF NOT EXISTS layout_revisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INT, rev INT, created REAL, payload TEXT, result TEXT
+);
+CREATE TABLE IF NOT EXISTS font_metrics(
+  font_family TEXT PRIMARY KEY,
+  units TEXT, source TEXT, updated REAL
+);
 """
 
 
@@ -193,3 +201,64 @@ class Store:
             return None
         return {"digest": r["digest"], "created": r["created"],
                 "exports": json.loads(r["exports"])}
+
+    # --- 版面修订 ---
+    def add_layout_revision(self, sid, payload, result):
+        r = self.conn.execute(
+            "select coalesce(max(rev),0) as m from layout_revisions"
+            " where session_id=?", (sid,)).fetchone()
+        rev = r["m"] + 1
+        self.conn.execute(
+            "insert into layout_revisions(session_id,rev,created,payload,"
+            "result) values(?,?,?,?,?)",
+            (sid, rev, time.time(),
+             json.dumps(payload, ensure_ascii=False),
+             json.dumps(result, ensure_ascii=False) if result else None))
+        self.conn.commit()
+        return rev
+
+    def get_layout_revision(self, sid, rev=None):
+        if rev is None:
+            r = self.conn.execute(
+                "select rev,created,payload,result from layout_revisions"
+                " where session_id=? order by rev desc limit 1",
+                (sid,)).fetchone()
+        else:
+            r = self.conn.execute(
+                "select rev,created,payload,result from layout_revisions"
+                " where session_id=? and rev=?", (sid, rev)).fetchone()
+        if not r:
+            return None
+        return {"rev": r["rev"], "created": r["created"],
+                "payload": json.loads(r["payload"]),
+                "result": json.loads(r["result"]) if r["result"] else None}
+
+    def list_layout_revisions(self, sid):
+        return [{"rev": r["rev"], "created": r["created"]}
+                for r in self.conn.execute(
+                    "select rev,created from layout_revisions"
+                    " where session_id=? order by rev", (sid,))]
+
+    # --- 字体度量 ---
+    def set_font_metrics(self, family, units, source):
+        self.conn.execute(
+            "insert or replace into font_metrics(font_family,units,source,"
+            "updated) values(?,?,?,?)",
+            (family, json.dumps(units), source, time.time()))
+        self.conn.commit()
+
+    def get_font_metrics(self, family):
+        r = self.conn.execute(
+            "select units,source,updated from font_metrics"
+            " where font_family=?", (family,)).fetchone()
+        if not r:
+            return None
+        return {"units": json.loads(r["units"]), "source": r["source"],
+                "updated": r["updated"]}
+
+    def list_font_metrics(self):
+        return [{"font_family": r["font_family"], "source": r["source"],
+                 "updated": r["updated"]}
+                for r in self.conn.execute(
+                    "select font_family,source,updated from font_metrics"
+                    " order by font_family")]
